@@ -32,3 +32,10 @@ if TEST_INSTALL_FAIL=1 run_migration >/dev/null 2>&1; then
   fail "a failed install must leave the migration pending"
 fi
 pass "a failed learn-omarchy install is propagated"
+
+learn_toast="$ROOT/install/user/first-run/learn.sh"
+grep -q -- '--exec uwsm-app -- learn-omarchy' "$learn_toast" ||
+  fail "the first-login toast launches learn-omarchy when clicked"
+grep -q 'first-run/learn.sh' "$ROOT/bin/omarchy-provision-first-run" ||
+  fail "first-run shows the Learn Omarchy toast"
+pass "first login invites the user to the interactive course"
