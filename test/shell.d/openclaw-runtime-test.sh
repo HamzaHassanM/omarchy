@@ -156,6 +156,8 @@ pass "package release gate fails clearly"
 mkdir -p "$HOME/.local/share/openclaw/runtime"
 touch "$HOME/.local/share/openclaw/runtime/.omarchy-managed"
 : > "$TEST_LOG"
-if "$ROOT/bin/omarchy-remove-dev-env" node > "$test_dir/remove-output" 2>&1; then fail "Node removal must retain OpenClaw dependency"; fi
-[[ ! -s $TEST_LOG ]] || fail "Node is not removed before dependency guard"
-pass "Node removal preserves OpenClaw runtime dependency"
+"$ROOT/bin/omarchy-remove-dev-env" node > "$test_dir/remove-output" 2>&1
+printf '%s\n' 'mise:uninstall node --all' 'mise:rm -g node' > "$test_dir/expected-node-removal"
+cmp "$TEST_LOG" "$test_dir/expected-node-removal" || fail "development Node removal only removes mise's Node"
+[[ -f $HOME/.local/share/openclaw/runtime/.omarchy-managed ]] || fail "development Node removal preserves OpenClaw"
+pass "development Node can be removed independently of OpenClaw"

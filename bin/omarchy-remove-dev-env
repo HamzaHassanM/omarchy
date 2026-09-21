@@ -26,10 +26,6 @@ ruby)
   rm -f ~/.gemrc
   ;;
 node)
-  if [[ -f $HOME/.local/share/openclaw/runtime/.omarchy-managed ]]; then
-    echo "OpenClaw uses mise's Node.js. Remove OpenClaw before removing Node.js." >&2
-    exit 1
-  fi
   echo -e "Removing Node.js...\n"
   mise uninstall node --all
   mise rm -g node
