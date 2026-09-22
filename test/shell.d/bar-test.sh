@@ -409,6 +409,10 @@ case ${OMARCHY_TEST_SHELL_STATE:-ready} in
     echo "omarchy-shell is not running" >&2
     exit 1
     ;;
+  unresponsive)
+    echo "omarchy-shell is not responding" >&2
+    exit 1
+    ;;
   unsupported)
     # An older shell that predates this call.
     echo "Function not found." >&2
@@ -427,12 +431,13 @@ echo "ok"
 STUB
 chmod +x "$put_tmp/bin/omarchy-shell"
 
+put_status=0
 put_output=$(PATH="$put_tmp/bin:$ROOT/bin:$PATH" OMARCHY_TEST_SHELL_STATE=missing \
   OMARCHY_SHELL_ABSENT_ATTEMPTS=2 \
-  "$ROOT/bin/omarchy-bar" put omarchy.keyboard-layout --after omarchy.clock 2>&1) ||
-  fail "put carries on when no shell is running" "$put_output"
+  "$ROOT/bin/omarchy-bar" put omarchy.keyboard-layout --after omarchy.clock 2>&1) || put_status=$?
+(( put_status == 75 )) || fail "put defers when no shell is running" "$put_output"
 [[ $put_output == *"is not running"* ]] || fail "put says why it placed nothing" "$put_output"
-pass "put carries on when no shell is running"
+pass "put defers when no shell is running"
 
 put_output=$(PATH="$put_tmp/bin:$ROOT/bin:$PATH" OMARCHY_TEST_SHELL_STATE=spawning \
   OMARCHY_TEST_SHELL_MARKER="$put_tmp/spawned" \
@@ -485,3 +490,13 @@ put_output=$(PATH="$put_tmp/bin:$ROOT/bin:$PATH" \
   fail "put places a widget through a ready shell" "$put_output"
 [[ $put_output == "omarchy.keyboard-layout is on the bar" ]] || fail "put reports the placed widget" "$put_output"
 pass "put places a widget through a ready shell"
+
+for scenario in starting crashing vanishing unsupported unresponsive; do
+  rm -f "$put_tmp/retry-marker"
+  put_status=0
+  put_output=$(PATH="$put_tmp/bin:$ROOT/bin:$PATH" OMARCHY_TEST_SHELL_STATE="$scenario" \
+    OMARCHY_TEST_SHELL_MARKER="$put_tmp/retry-marker" OMARCHY_SHELL_READY_ATTEMPTS=2 \
+    "$ROOT/bin/omarchy-bar" put omarchy.keyboard-layout --after omarchy.clock 2>&1) || put_status=$?
+  (( put_status == 75 )) || fail "$scenario returns the deferred status" "$put_output"
+done
+pass "unavailable, incompatible and disappearing shells all defer placement"

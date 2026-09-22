@@ -106,3 +106,32 @@ for step in omarchy-migrate omarchy-hook omarchy-update-aur-pkgs omarchy-update-
   fi
 done
 pass "a blocked package upgrade stops the update before it migrates"
+
+# Run the real migration wrapper inside the update, with all system work stubbed.
+ln -sf "$ROOT/bin/omarchy-migrate" "$stub_bin/omarchy-migrate"
+test_root="$test_tmp/omarchy"
+state="$test_tmp/migration-state"
+mkdir -p "$test_root/migrations" "$state"
+cat >"$test_root/migrations/100-shell.sh" <<'SH'
+printf 'shell-migration\n' >>"$STEP_LOG"
+exit "${MIGRATION_STATUS:-75}"
+SH
+cat >"$test_root/migrations/200-later.sh" <<'SH'
+printf 'later-migration\n' >>"$STEP_LOG"
+SH
+OMARCHY_PATH="$test_root" OMARCHY_MIGRATION_STATE="$state" run_update -y ||
+  fail "a deferred migration must not fail the update" "$(cat "$test_tmp/out" "$test_tmp/err")"
+grep -q '^omarchy-update-restart ' "$test_tmp/steps" || fail "deferral must reach the shell restart"
+[[ ! -e $state/100-shell.sh && ! -e $state/200-later.sh ]] || fail "deferral must not complete migrations"
+if grep -q '^later-migration$' "$test_tmp/steps"; then
+  fail "deferral must not run later migrations"
+fi
+pass "real migration deferral lets the update reach restart without advancing the queue"
+
+if MIGRATION_STATUS=1 OMARCHY_PATH="$test_root" OMARCHY_MIGRATION_STATE="$state" run_update -y; then
+  fail "an ordinary migration failure must fail the update"
+fi
+if grep -q '^omarchy-update-restart ' "$test_tmp/steps"; then
+  fail "an ordinary migration failure must stop the update"
+fi
+pass "ordinary migration failures still stop the update"

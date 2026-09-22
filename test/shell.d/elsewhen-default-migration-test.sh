@@ -18,6 +18,10 @@ SH
 cat >"$test_dir/bin/omarchy-shell" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >>"$CALL_LOG"
+if [[ -n ${EXPECTED_IPC_TREE:-} && $OMARCHY_PATH != "$EXPECTED_IPC_TREE" ]]; then
+  echo "wrong IPC tree: $OMARCHY_PATH" >&2
+  exit 1
+fi
 quiet=0
 if [[ $1 == "-q" ]]; then
   quiet=1
@@ -31,6 +35,12 @@ fi
 [[ $2 != "rescanPlugins" ]] || exit 0
 printf '%s\n' "${TEST_PUT_RESULT:-ok}"
 SH
+cat >"$test_dir/bin/systemctl" <<'SH'
+#!/bin/bash
+[[ ${SESSION_ENV_STATUS:-0} == 0 ]] || exit "$SESSION_ENV_STATUS"
+[[ -z ${SESSION_TREE:-} ]] || printf 'OMARCHY_PATH=%s\n' "$SESSION_TREE"
+exit 0
+SH
 cat >"$test_dir/bin/omarchy-restart-shell" <<'SH'
 #!/bin/bash
 echo 'migration must leave the restart to omarchy update' >&2
@@ -39,7 +49,7 @@ SH
 chmod +x "$test_dir/bin/"*
 
 mkdir -p "$test_dir/packaged/shell/plugins/omacom.elsewhen"
-migration="$ROOT/migrations/1790042972.sh"
+migration="$ROOT/migrations/1790044019.sh"
 sed "s|/usr/share/omarchy|$test_dir/packaged|g" "$migration" >"$test_dir/migration.sh"
 
 plugin="$test_dir/home/.config/omarchy/plugins/omacom.elsewhen"
@@ -108,25 +118,78 @@ if env TEST_PUT_RESULT=unknown HOME="$test_dir/home" OMARCHY_PATH="$ROOT" PATH="
 fi
 pass "an unknown widget leaves the migration pending"
 
-# An update with no shell to ask, from a TTY or with the shell down, still
-# finishes: the package and link land, the placement is skipped, and the update
-# restarts the shell afterwards.
+# The bar helper must preserve a retryable failure through the migration.
 rm "$plugin"
-: >"$CALL_LOG"
-if ! env SHELL_ABSENT=1 OMARCHY_SHELL_ABSENT_ATTEMPTS=1 HOME="$test_dir/home" OMARCHY_PATH="$ROOT" PATH="$test_dir/bin:$ROOT/bin:$PATH" \
-  bash -euo pipefail "$test_dir/migration.sh" >"$test_dir/output" 2>&1; then
-  fail "an absent shell must not fail the migration" "$(cat "$test_dir/output")"
-fi
-grep -q "omacom.elsewhen was not put on the bar" "$test_dir/output" || fail "an absent shell is reported" "$(cat "$test_dir/output")"
+migration_status=0
+env SHELL_ABSENT=1 OMARCHY_SHELL_ABSENT_ATTEMPTS=1 HOME="$test_dir/home" OMARCHY_PATH="$ROOT" PATH="$test_dir/bin:$ROOT/bin:$PATH" \
+  bash -euo pipefail "$test_dir/migration.sh" >"$test_dir/output" 2>&1 || migration_status=$?
+(( migration_status == 75 )) || fail "an absent shell defers the migration" "$(cat "$test_dir/output")"
 [[ $(readlink "$plugin") == "$test_dir/packaged/shell/plugins/omacom.elsewhen" ]] || fail "the package and plugin link land without a shell"
-[[ $(cat "$CALL_LOG") == "$expected" ]] || fail "the rescan is best-effort and the put is still asked" "$(cat "$CALL_LOG")"
-pass "an absent shell leaves the update running with the package and link in place"
+pass "an absent shell leaves placement retryable with package and link in place"
+
+for caller in "$ROOT" "$test_dir/packaged"; do
+  rm -f "$plugin"
+  if [[ $caller == "$ROOT" ]]; then
+    session="$test_dir/packaged"
+  else
+    session="$ROOT"
+  fi
+  SESSION_TREE="$session" EXPECTED_IPC_TREE="$session" run_migration "$caller"
+  [[ $(readlink "$plugin") == "$test_dir/packaged/shell/plugins/omacom.elsewhen" ]] || fail "both sides of a dev transition can discover the package"
+done
+pass "dev link and unlink use the active session tree for rescan and placement"
+SESSION_ENV_STATUS=1 EXPECTED_IPC_TREE="$ROOT" run_migration "$ROOT"
+pass "an unavailable session environment falls back to the caller tree"
 
 # The first run of this migration was under 1789581661.sh, before the re-point
 # existed; that marker must not stop the renamed file from running there.
 state="$test_dir/state"
 mkdir -p "$state"
-touch "$state/1789581661.sh"
+touch "$state/1789581661.sh" "$state/1790042972.sh"
 OMARCHY_MIGRATION_STATE="$state" OMARCHY_PATH="$ROOT" "$ROOT/bin/omarchy-migrate" --pending >"$test_dir/pending" || true
 grep -qx "$(basename "$migration")" "$test_dir/pending" || fail "the old marker must not satisfy the renamed migration" "$(cat "$test_dir/pending")"
 pass "a machine that applied the migration under its old name runs it again"
+
+# Exercise the real runner with only the repair and a dependent migration.
+fixture="$test_dir/runner"
+mkdir -p "$fixture/migrations"
+cp "$test_dir/migration.sh" "$fixture/migrations/$(basename "$migration")"
+printf 'echo later >>"$CALL_LOG"\n' >"$fixture/migrations/9999999999.sh"
+cat >"$test_dir/bin/omarchy-notification-dismiss" <<'SH'
+#!/bin/bash
+printf 'dismiss\n' >>"$CALL_LOG"
+SH
+chmod +x "$test_dir/bin/omarchy-notification-dismiss"
+run_runner() {
+  HOME="$test_dir/home" OMARCHY_PATH="$fixture" OMARCHY_MIGRATION_STATE="$state" \
+    OMARCHY_SHELL_ABSENT_ATTEMPTS=1 PATH="$test_dir/bin:$ROOT/bin:$PATH" \
+    "$ROOT/bin/omarchy-migrate" "$@" >"$test_dir/output" 2>&1
+}
+: >"$CALL_LOG"
+SHELL_ABSENT=1 run_runner || fail "deferral must allow the update to continue"
+[[ ! -e $state/$(basename "$migration") && ! -e $state/9999999999.sh ]] || fail "deferral must not create completion markers"
+[[ $(cat "$CALL_LOG") != *later* && $(cat "$CALL_LOG") != *dismiss* ]] || fail "deferral stops the queue and preserves the reminder"
+run_runner --pending
+[[ $(cat "$test_dir/output") == "$(basename "$migration")"$'\n9999999999.sh' ]] || fail "the deferred migration and its successors remain pending"
+pass "real runner defers without completing or advancing the queue"
+
+for failure in package widget; do
+  status=0
+  if [[ $failure == "package" ]]; then
+    PACKAGE_STATUS=1 run_runner || status=$?
+  else
+    TEST_PUT_RESULT=unknown run_runner || status=$?
+  fi
+  (( status == 1 )) || fail "$failure errors remain fatal"
+  [[ ! -e $state/$(basename "$migration") && ! -e $state/9999999999.sh ]] || fail "$failure errors leave the queue pending"
+done
+pass "package and widget failures still abort the real runner"
+
+: >"$CALL_LOG"
+run_runner || fail "available shell completes the deferred migration"
+[[ -f $state/$(basename "$migration") && -f $state/9999999999.sh ]] || fail "successful retry completes the queue"
+[[ $(tail -n 2 "$CALL_LOG") == $'later\ndismiss' ]] || fail "successful retry advances and clears the reminder"
+: >"$CALL_LOG"
+run_runner
+[[ $(cat "$CALL_LOG") == dismiss ]] || fail "completed migration must not repeat placement"
+pass "successful retry marks completion, resumes the queue and does not run twice"

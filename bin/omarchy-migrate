@@ -90,7 +90,17 @@ while IFS=$'\t' read -r name file marker <&3; do
 
   if [[ ! -f $marker ]]; then
     echo -e "\e[32m\nRunning migration (${name%.sh})\e[0m"
-    OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file" 3<&-
+    if OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$file" 3<&-; then
+      :
+    else
+      status=$?
+      if (( status == 75 )); then
+        echo "Migration ${name%.sh} deferred; it and later migrations remain pending."
+        echo "Run omarchy-migrate once the shell is available, or use the reminder at next login."
+        exit 0
+      fi
+      exit "$status"
+    fi
     mkdir -p "$(dirname "$marker")"
     touch "$marker"
   fi

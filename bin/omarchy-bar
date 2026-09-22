@@ -37,7 +37,8 @@ Enable and disable widgets with 'omarchy plugin enable' and
 
 'put' places a widget the way 'plugin enable' does, but leaves one that is
 already on the bar where it is, and falls back to the widget's usual spot when
---before / --after names a widget the bar does not carry.
+--before / --after names a widget the bar does not carry. It exits 75 when
+the shell is unavailable, still starting, or needs restarting to support put.
 
 Examples:
   omarchy bar use local.neon-bar
@@ -230,9 +231,8 @@ bar_widget_default_section() {
   ' <<<"$catalog"
 }
 
-# Asks the shell to place a widget, waiting out one still coming up. Answers 0
-# with the reply in PUT_RESULT, 1 when there was no shell to ask. Only an
-# absent shell is carried on from: omarchy-migrate marks a 0 return as done.
+# A shell that cannot fulfill the request leaves migrations pending (75).
+# Invalid widgets and placements remain ordinary failures.
 PUT_RESULT=""
 SHELL_ANSWERED=0
 ask_to_put() {
@@ -246,20 +246,25 @@ ask_to_put() {
     elif [[ $PUT_RESULT == *"is not running"* ]]; then
       # Answered once and now gone: it stopped mid-request.
       if (( SHELL_ANSWERED )); then
-        fail "omarchy-shell did not become ready; $id was not put on the bar"
+        echo "omarchy-shell did not become ready; $id was not put on the bar" >&2
+        return 75
       fi
       # A shell being spawned has no socket yet, and nothing says a launch is
       # under way, so give one a few seconds to turn up.
       if (( ++absent >= ${OMARCHY_SHELL_ABSENT_ATTEMPTS:-30} )); then
         echo "omarchy-shell is not running; $id was not put on the bar" >&2
-        return 1
+        return 75
       fi
+    elif [[ $PUT_RESULT == "omarchy-shell is not responding" || $PUT_RESULT == "Function not found." || $PUT_RESULT == "Target not found." ]]; then
+      echo "could not put $id on the bar: $PUT_RESULT" >&2
+      return 75
     else
       fail "could not put $id on the bar: $PUT_RESULT"
     fi
     sleep 0.1
   done
-  fail "omarchy-shell did not become ready; $id was not put on the bar"
+  echo "omarchy-shell did not become ready; $id was not put on the bar" >&2
+  return 75
 }
 
 # Placement lives in the shell, which owns the config it has in memory. Putting
@@ -285,14 +290,14 @@ cmd_put() {
 
   local placement
   placement=$(placement_json)
-  ask_to_put "$id" "$placement" || return 0
+  ask_to_put "$id" "$placement" || return $?
 
   # An update runs migrations before it restarts the shell, so this one can
   # predate the fallback. Ask it again without the neighbour it cannot find.
   if [[ $PUT_RESULT == "could not find target widget"* ]]; then
     PLACEMENT_BEFORE=""
     PLACEMENT_AFTER=""
-    ask_to_put "$id" "$(placement_json)" || return 0
+    ask_to_put "$id" "$(placement_json)" || return $?
   fi
 
   [[ $PUT_RESULT != "unknown" ]] || fail "$id is not a known widget; run 'omarchy plugin list'"
