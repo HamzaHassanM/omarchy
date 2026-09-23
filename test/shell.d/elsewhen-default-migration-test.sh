@@ -10,10 +10,8 @@ trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/home"
 export CALL_LOG="$test_dir/calls"
 
-cat >"$test_dir/bin/omarchy" <<'SH'
+cat >"$test_dir/bin/omarchy-pkg-add" <<'SH'
 #!/bin/bash
-[[ $1 == "pkg" && $2 == "add" ]] || exit 1
-shift 2
 printf 'package %s\n' "$*" >>"$CALL_LOG"
 exit "${PACKAGE_STATUS:-0}"
 SH
@@ -40,7 +38,7 @@ exit 1
 SH
 chmod +x "$test_dir/bin/"*
 
-migration="$ROOT/migrations/1790049495.sh"
+migration="$ROOT/migrations/1790042972.sh"
 
 plugin="$test_dir/home/.config/omarchy/plugins/omacom.elsewhen"
 run_migration() {
@@ -91,10 +89,11 @@ grep -q "omacom.elsewhen was not put on the bar" "$test_dir/output" || fail "an 
 [[ $(cat "$CALL_LOG") == "$expected" ]] || fail "the rescan is best-effort and the put is still asked" "$(cat "$CALL_LOG")"
 pass "an absent shell keeps the existing bar helper behavior without a user plugin link"
 
-# Both previously shipped migration markers must leave this repair pending.
+# The first version of this migration ran as 1789581661.sh; that marker must
+# not stop this one from running there.
 state="$test_dir/state"
 mkdir -p "$state"
-touch "$state/1789581661.sh" "$state/1790042972.sh"
+touch "$state/1789581661.sh"
 OMARCHY_MIGRATION_STATE="$state" OMARCHY_PATH="$ROOT" "$ROOT/bin/omarchy-migrate" --pending >"$test_dir/pending" || true
 grep -qx "$(basename "$migration")" "$test_dir/pending" || fail "the old marker must not satisfy the renamed migration" "$(cat "$test_dir/pending")"
 pass "a machine that applied the migration under its old name runs it again"
